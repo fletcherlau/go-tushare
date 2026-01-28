@@ -4,46 +4,6 @@ import (
 	"fmt"
 )
 
-// ==================== 股票基础信息 ====================
-
-// StockBasic 股票基础信息参数
-type StockBasicParams struct {
-	TSCode     string // TS股票代码
-	Name       string // 股票名称
-	Exchange   string // 交易所 SSE上交所 SZSE深交所 BSE北交所
-	Market     string // 市场类别（主板/创业板/科创板/CDR/北交所）
-	IsHS       string // 是否沪深港通标的，N否 H沪股通 S深股通
-	ListStatus string // 上市状态 L上市 D退市 P暂停上市，默认L
-	Fields     string // 返回字段
-}
-
-// StockBasic 获取股票基础信息（自动处理分页）
-func (c *Client) StockBasic(params *StockBasicParams, opts ...QueryOption) (*Response, error) {
-	reqParams := make(map[string]interface{})
-	if params.TSCode != "" {
-		reqParams["ts_code"] = params.TSCode
-	}
-	if params.Name != "" {
-		reqParams["name"] = params.Name
-	}
-	if params.Exchange != "" {
-		reqParams["exchange"] = params.Exchange
-	}
-	if params.Market != "" {
-		reqParams["market"] = params.Market
-	}
-	if params.IsHS != "" {
-		reqParams["is_hs"] = params.IsHS
-	}
-	if params.ListStatus != "" {
-		reqParams["list_status"] = params.ListStatus
-	} else {
-		reqParams["list_status"] = "L"
-	}
-
-	return c.Query("stock_basic", reqParams, params.Fields, opts...)
-}
-
 // ==================== 日线行情 ====================
 
 // DailyParams 日线行情参数
@@ -134,9 +94,52 @@ func (c *Client) Monthly(params *MonthlyParams, opts ...QueryOption) (*Response,
 	return c.Query("monthly", reqParams, params.Fields, opts...)
 }
 
-// ==================== 股票列表 ====================
+// ==================== 股票基础信息（已迁移到 stock/basic 包）====================
+// 以下方法保留以保持向后兼容，建议使用 stock/basic 包
+
+// StockBasicParams 股票基础信息参数
+// Deprecated: 建议使用 stock/basic 包
+// 示例：basic.StockBasic(client, params)
+type StockBasicParams struct {
+	TSCode     string // TS股票代码
+	Name       string // 股票名称
+	Exchange   string // 交易所 SSE上交所 SZSE深交所 BSE北交所
+	Market     string // 市场类别（主板/创业板/科创板/CDR/北交所）
+	IsHS       string // 是否沪深港通标的，N否 H沪股通 S深股通
+	ListStatus string // 上市状态 L上市 D退市 P暂停上市，默认L
+	Fields     string // 返回字段
+}
+
+// StockBasic 获取股票基础信息（自动处理分页）
+// Deprecated: 建议使用 stock/basic 包
+func (c *Client) StockBasic(params *StockBasicParams, opts ...QueryOption) (*Response, error) {
+	reqParams := make(map[string]interface{})
+	if params.TSCode != "" {
+		reqParams["ts_code"] = params.TSCode
+	}
+	if params.Name != "" {
+		reqParams["name"] = params.Name
+	}
+	if params.Exchange != "" {
+		reqParams["exchange"] = params.Exchange
+	}
+	if params.Market != "" {
+		reqParams["market"] = params.Market
+	}
+	if params.IsHS != "" {
+		reqParams["is_hs"] = params.IsHS
+	}
+	if params.ListStatus != "" {
+		reqParams["list_status"] = params.ListStatus
+	} else {
+		reqParams["list_status"] = "L"
+	}
+
+	return c.Query("stock_basic", reqParams, params.Fields, opts...)
+}
 
 // StockCompanyParams 上市公司基本信息参数
+// Deprecated: 建议使用 stock/basic 包
 type StockCompanyParams struct {
 	TSCode   string // 股票代码
 	Exchange string // 交易所代码
@@ -144,6 +147,7 @@ type StockCompanyParams struct {
 }
 
 // StockCompany 获取上市公司基本信息（自动处理分页）
+// Deprecated: 建议使用 stock/basic 包
 func (c *Client) StockCompany(params *StockCompanyParams, opts ...QueryOption) (*Response, error) {
 	reqParams := make(map[string]interface{})
 	if params.TSCode != "" {
@@ -154,6 +158,64 @@ func (c *Client) StockCompany(params *StockCompanyParams, opts ...QueryOption) (
 	}
 
 	return c.Query("stock_company", reqParams, params.Fields, opts...)
+}
+
+// TradeCal 获取交易日历（自动处理分页）
+// Deprecated: 建议使用 stock/basic 包
+func (c *Client) TradeCal(exchange string, startDate, endDate string, isOpen string, opts ...QueryOption) (*Response, error) {
+	params := map[string]interface{}{
+		"exchange":   exchange,
+		"start_date": startDate,
+		"end_date":   endDate,
+	}
+	if isOpen != "" {
+		params["is_open"] = isOpen
+	}
+	return c.Query("trade_cal", params, "", opts...)
+}
+
+// NameChange 获取股票曾用名（自动处理分页）
+// Deprecated: 建议使用 stock/basic 包
+func (c *Client) NameChange(tsCode string, startDate, endDate string, opts ...QueryOption) (*Response, error) {
+	params := make(map[string]interface{})
+	if tsCode != "" {
+		params["ts_code"] = tsCode
+	}
+	if startDate != "" {
+		params["start_date"] = startDate
+	}
+	if endDate != "" {
+		params["end_date"] = endDate
+	}
+	return c.Query("namechange", params, "", opts...)
+}
+
+// HSConst 获取沪深股通成份股（自动处理分页）
+// Deprecated: 建议使用 stock/basic 包
+func (c *Client) HSConst(hsType string, isNew string, opts ...QueryOption) (*Response, error) {
+	params := map[string]interface{}{
+		"hs_type": hsType,
+	}
+	if isNew != "" {
+		params["is_new"] = isNew
+	}
+	return c.Query("hs_const", params, "", opts...)
+}
+
+// StockSuspend 获取停牌信息（自动处理分页）
+// Deprecated: 建议使用 stock/basic 包
+func (c *Client) StockSuspend(tsCode string, suspendDate, resumeDate string, opts ...QueryOption) (*Response, error) {
+	params := make(map[string]interface{})
+	if tsCode != "" {
+		params["ts_code"] = tsCode
+	}
+	if suspendDate != "" {
+		params["suspend_date"] = suspendDate
+	}
+	if resumeDate != "" {
+		params["resume_date"] = resumeDate
+	}
+	return c.Query("suspend", params, "", opts...)
 }
 
 // ==================== 每日指标 ====================
@@ -448,60 +510,6 @@ func (c *Client) FutDaily(params *FutDailyParams, opts ...QueryOption) (*Respons
 
 // ==================== 辅助工具方法 ====================
 
-// TradeCal 获取交易日历（自动处理分页）
-func (c *Client) TradeCal(exchange string, startDate, endDate string, isOpen string, opts ...QueryOption) (*Response, error) {
-	params := map[string]interface{}{
-		"exchange":   exchange,
-		"start_date": startDate,
-		"end_date":   endDate,
-	}
-	if isOpen != "" {
-		params["is_open"] = isOpen
-	}
-	return c.Query("trade_cal", params, "", opts...)
-}
-
-// NameChange 获取股票曾用名（自动处理分页）
-func (c *Client) NameChange(tsCode string, startDate, endDate string, opts ...QueryOption) (*Response, error) {
-	params := make(map[string]interface{})
-	if tsCode != "" {
-		params["ts_code"] = tsCode
-	}
-	if startDate != "" {
-		params["start_date"] = startDate
-	}
-	if endDate != "" {
-		params["end_date"] = endDate
-	}
-	return c.Query("namechange", params, "", opts...)
-}
-
-// HSConst 获取沪深股通成份股（自动处理分页）
-func (c *Client) HSConst(hsType string, isNew string, opts ...QueryOption) (*Response, error) {
-	params := map[string]interface{}{
-		"hs_type": hsType,
-	}
-	if isNew != "" {
-		params["is_new"] = isNew
-	}
-	return c.Query("hs_const", params, "", opts...)
-}
-
-// StockSuspend 获取停牌信息（自动处理分页）
-func (c *Client) StockSuspend(tsCode string, suspendDate, resumeDate string, opts ...QueryOption) (*Response, error) {
-	params := make(map[string]interface{})
-	if tsCode != "" {
-		params["ts_code"] = tsCode
-	}
-	if suspendDate != "" {
-		params["suspend_date"] = suspendDate
-	}
-	if resumeDate != "" {
-		params["resume_date"] = resumeDate
-	}
-	return c.Query("suspend", params, "", opts...)
-}
-
 // String 辅助函数：将 interface{} 转换为字符串
 func toString(v interface{}) string {
 	if v == nil {
@@ -513,6 +521,6 @@ func toString(v interface{}) string {
 	case fmt.Stringer:
 		return val.String()
 	default:
-		return fmt.Sprintf("%v", v)
+		return fmt.Sprintf("%v", val)
 	}
 }
