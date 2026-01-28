@@ -1,12 +1,13 @@
 # go-tushare
 
-Tushare Pro HTTP API 的 Go 语言 SDK。
+Tushare Pro HTTP API 的 Go 语言 SDK，使用 `backoff` 库实现优雅的指数退避重试机制。
 
 ## 特性
 
 - ✅ **自动分页** - 自动处理分页，一次性获取所有数据，业务层无需关心分页逻辑
-- ✅ **重试机制** - 支持超时和限频错误的自动重试
-- ✅ **上下文支持** - 支持 context.Context，可进行超时控制
+- ✅ **指数退保重试** - 基于 `github.com/cenkalti/backoff/v4` 实现智能退避策略
+- ✅ **灵活重试配置** - 支持指数退避和固定间隔两种策略
+- ✅ **上下文支持** - 支持 `context.Context`，可进行超时控制
 - ✅ **多种配置方式** - 支持选项模式或配置结构体创建客户端
 - ✅ **DataFrame 支持** - 提供类似 pandas 的 DataFrame 数据操作
 
@@ -34,10 +35,10 @@ import (
 )
 
 func main() {
-    // 创建客户端
+    // 创建客户端（默认使用指数退避重试）
     client := tushare.NewClient("your_token_here")
 
-    // 获取股票基础信息（自动处理分页，获取所有数据）
+    // 获取股票基础信息（自动处理分页和重试）
     resp, err := client.StockBasic(&tushare.StockBasicParams{
         Exchange:   "SZSE",
         ListStatus: "L",
@@ -60,12 +61,22 @@ func main() {
 ### 方式 1：使用选项创建（推荐）
 
 ```go
+// 使用指数退避（推荐）
 client := tushare.NewClient("your_token",
-    tushare.WithHTTPURL("https://api.tushare.pro"),  // 自定义 API 地址
-    tushare.WithTimeout(60 * time.Second),             // HTTP 超时
-    tushare.WithLimit(5000),                           // 每页数据条数
-    tushare.WithRetries(3),                            // 重试次数
-    tushare.WithRetryInterval(10 * time.Second),       // 重试间隔
+    tushare.WithHTTPURL("https://api.tushare.pro"),
+    tushare.WithTimeout(60 * time.Second),
+    tushare.WithLimit(5000),                     // 每页数据条数
+    tushare.WithRetries(5),                      // 最大重试次数
+    tushare.WithRetryInterval(500 * time.Millisecond), // 初始重试间隔
+    tushare.WithMaxInterval(30 * time.Second),   // 最大重试间隔
+    tushare.WithBackoff(true),                   // 启用指数退避
+)
+
+// 使用固定间隔
+client := tushare.NewClient("your_token",
+    tushare.WithRetries(3),
+    tushare.WithRetryInterval(2 * time.Second),  // 固定间隔 2s
+    tushare.WithBackoff(false),                  // 禁用指数退避
 )
 ```
 
@@ -73,14 +84,33 @@ client := tushare.NewClient("your_token",
 
 ```go
 conf := tushare.ClientConf{
-    Token:    "your_token",
-    Endpoint: "https://api.tushare.pro",
-    Limit:    5000,              // 每页数据条数
-    Retries:  3,                 // 重试次数
-    Interval: 10 * time.Second,  // 重试间隔
-    Timeout:  30 * time.Second,  // HTTP 超时
+    Token:       "your_token",
+    Endpoint:    "https://api.tushare.pro",
+    Limit:       5000,              // 每页数据条数
+    Retries:     5,                 // 最大重试次数
+    Interval:    1 * time.Second,   // 初始重试间隔
+    MaxInterval: 30 * time.Second,  // 最大重试间隔
+    Timeout:     30 * time.Second,  // HTTP 超时
+    UseBackoff:  true,              // 使用指数退避
 }
 
+client := tushare.NewClientWithConf(conf)
+```
+
+### 方式 3：使用便捷重试配置
+
+```go
+// 默认配置（指数退避）
+retryConf := tushare.DefaultRetryConfig()
+
+// 激进配置（适合不稳定网络）
+retryConf := tushare.AggressiveRetryConfig()
+
+// 禁用重试
+retryConf := tushare.NoRetryConfig()
+
+// 使用配置创建客户端
+conf := tushare.ClientConfWithRetry("your_token", retryConf)
 client := tushare.NewClientWithConf(conf)
 ```
 
@@ -90,9 +120,69 @@ client := tushare.NewClientWithConf(conf)
 |--------|--------|------|
 | Endpoint | `https://api.tushare.pro` | API 地址 |
 | Limit | 5000 | 每页数据条数 |
-| Retries | 3 | 重试次数 |
-| Interval | 10s | 重试间隔 |
+| Retries | 3 | 最大重试次数 |
+| Interval | 1s | 初始重试间隔 |
+| MaxInterval | 30s | 最大重试间隔 |
 | Timeout | 30s | HTTP 超时 |
+| UseBackoff | true | 使用指数退避 |
+
+## 重试机制
+
+### 指数退避 vs 固定间隔
+
+**指数退避（推荐）**：
+- 第 1 次重试：等待 1s
+- 第 2 次重试：等待 2s
+- 第 3 次重试：等待 4s
+- 第 4 次重试：等待 8s（但不超过 MaxInterval）
+
+优点：避免雪崩效应，给服务器恢复时间
+
+**固定间隔**：
+- 每次重试都等待固定时间（如 2s）
+
+### 可重试的错误
+
+SDK 会自动对以下情况进行重试：
+- 网络超时错误
+- 连接错误
+- 限频错误（code=40203）
+
+不可重试的错误（立即返回）：
+- API 业务错误（如权限不足、参数错误）
+- HTTP 4xx 错误
+
+### 自定义重试逻辑
+
+```go
+// 使用通用重试工具函数
+err := tushare.ExecuteWithRetry(
+    context.Background(),
+    func() error {
+        // 你的操作
+        return doSomething()
+    },
+    5,                      // 最大重试 5 次
+    true,                   // 使用指数退避
+    100*time.Millisecond,   // 初始间隔
+    5*time.Second,          // 最大间隔
+)
+
+// 使用带通知的重试（可记录日志或 metrics）
+err := tushare.ExecuteWithRetryNotify(
+    ctx,
+    operation,
+    5, true, 100*time.Millisecond, 5*time.Second,
+    func(err error, duration time.Duration) {
+        log.Printf("将在 %v 后重试，错误: %v", duration, err)
+    },
+)
+
+// 标记不可重试的错误
+if isPermanentError(err) {
+    return tushare.PermanentError(err)
+}
+```
 
 ## 核心功能
 
@@ -101,7 +191,7 @@ client := tushare.NewClientWithConf(conf)
 所有 API 方法都支持自动分页，一次性获取所有数据：
 
 ```go
-// 自动获取所有分页数据
+// 自动获取所有分页数据（自动重试每个失败的请求）
 resp, err := client.StockBasic(&tushare.StockBasicParams{
     Exchange: "SZSE",
 })
@@ -129,27 +219,12 @@ if err == context.DeadlineExceeded {
 }
 ```
 
-### 重试机制
-
-SDK 会自动对以下情况进行重试：
-- 网络超时错误
-- 限频错误（code=40203）
-
-重试次数和间隔可配置：
-
-```go
-client := tushare.NewClient(token,
-    tushare.WithRetries(5),
-    tushare.WithRetryInterval(5 * time.Second),
-)
-```
-
 ## API 说明
 
 ### 通用查询接口
 
 ```go
-// 自动分页查询
+// 自动分页查询（带重试）
 resp, err := client.Query("api_name", map[string]interface{}{
     "param1": "value1",
     "param2": "value2",
@@ -242,6 +317,8 @@ if err != nil {
         fmt.Printf("API 错误: code=%d, msg=%s\n", apiErr.Code, apiErr.Msg)
     } else if err == context.DeadlineExceeded {
         fmt.Println("请求超时")
+    } else if tushare.IsPermanentError(err) {
+        fmt.Println("不可重试的错误")
     } else {
         fmt.Printf("请求错误: %v\n", err)
     }
@@ -269,6 +346,10 @@ type ResponseData struct {
 
 本 SDK 基于 Tushare Pro HTTP API 开发，完整接口文档请参考：
 https://tushare.pro/document/1?doc_id=130
+
+## 依赖
+
+- [github.com/cenkalti/backoff/v4](https://github.com/cenkalti/backoff) - 指数退避重试库
 
 ## License
 

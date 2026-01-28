@@ -4,19 +4,23 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"time"
+
+	"github.com/cenkalti/backoff/v4"
 )
 
 const (
-	DefaultHTTPURL     = "https://api.tushare.pro"
-	DefaultTimeout     = 30 * time.Second
-	DefaultLimit       = 5000
-	DefaultRetries     = 3
-	DefaultRetryInterval = 10 * time.Second
-	
+	DefaultHTTPURL       = "https://api.tushare.pro"
+	DefaultTimeout       = 30 * time.Second
+	DefaultLimit         = 5000
+	DefaultRetries       = 3
+	DefaultRetryInterval = 1 * time.Second
+	DefaultMaxInterval   = 30 * time.Second
+
 	// CodeOK 成功
 	CodeOK = 0
 	// CodeRateLimitExceeded 超过调用频率
@@ -25,12 +29,14 @@ const (
 
 // ClientConf 客户端配置
 type ClientConf struct {
-	Token    string        // Token
-	Endpoint string        // API 地址，默认 https://api.tushare.pro
-	Limit    int           // 每页数据限制，默认 5000
-	Retries  int           // 重试次数，默认 3
-	Interval time.Duration // 重试间隔，默认 10s
-	Timeout  time.Duration // HTTP 超时，默认 30s
+	Token        string        // Token
+	Endpoint     string        // API 地址，默认 https://api.tushare.pro
+	Limit        int           // 每页数据限制，默认 5000
+	Retries      int           // 最大重试次数，默认 3
+	Interval     time.Duration // 初始重试间隔，默认 1s
+	MaxInterval  time.Duration // 最大重试间隔，默认 30s
+	Timeout      time.Duration // HTTP 超时，默认 30s
+	UseBackoff   bool          // 是否使用指数退避，默认 true
 }
 
 // Client Tushare API 客户端
@@ -71,29 +77,45 @@ func WithLimit(limit int) ClientOption {
 	}
 }
 
-// WithRetries 设置重试次数
+// WithRetries 设置最大重试次数
 func WithRetries(retries int) ClientOption {
 	return func(c *Client) {
 		c.conf.Retries = retries
 	}
 }
 
-// WithRetryInterval 设置重试间隔
+// WithRetryInterval 设置初始重试间隔
 func WithRetryInterval(interval time.Duration) ClientOption {
 	return func(c *Client) {
 		c.conf.Interval = interval
 	}
 }
 
+// WithMaxInterval 设置最大重试间隔
+func WithMaxInterval(maxInterval time.Duration) ClientOption {
+	return func(c *Client) {
+		c.conf.MaxInterval = maxInterval
+	}
+}
+
+// WithBackoff 设置是否使用指数退避
+func WithBackoff(useBackoff bool) ClientOption {
+	return func(c *Client) {
+		c.conf.UseBackoff = useBackoff
+	}
+}
+
 // NewClient 创建新的 Tushare 客户端（兼容旧版本）
 func NewClient(token string, opts ...ClientOption) *Client {
 	conf := &ClientConf{
-		Token:    token,
-		Endpoint: DefaultHTTPURL,
-		Limit:    DefaultLimit,
-		Retries:  DefaultRetries,
-		Interval: DefaultRetryInterval,
-		Timeout:  DefaultTimeout,
+		Token:       token,
+		Endpoint:    DefaultHTTPURL,
+		Limit:       DefaultLimit,
+		Retries:     DefaultRetries,
+		Interval:    DefaultRetryInterval,
+		MaxInterval: DefaultMaxInterval,
+		Timeout:     DefaultTimeout,
+		UseBackoff:  true,
 	}
 
 	client := &Client{
@@ -124,6 +146,9 @@ func NewClientWithConf(conf ClientConf, opts ...ClientOption) *Client {
 	}
 	if conf.Interval <= 0 {
 		conf.Interval = DefaultRetryInterval
+	}
+	if conf.MaxInterval <= 0 {
+		conf.MaxInterval = DefaultMaxInterval
 	}
 	if conf.Timeout <= 0 {
 		conf.Timeout = DefaultTimeout
@@ -253,7 +278,28 @@ func (c *Client) QueryOne(apiName string, params map[string]interface{}, fields 
 	return c.postWithRetry(apiName, params, fields, options.ctx)
 }
 
-// postWithRetry 发送 POST 请求（带重试机制）
+// isRetryableError 判断错误是否可重试
+func isRetryableError(resp *Response, err error) bool {
+	// 网络错误可重试
+	if err != nil {
+		return true
+	}
+	// 限频错误可重试
+	if resp != nil && resp.Code == CodeRateLimitExceeded {
+		return true
+	}
+	// 服务器错误(5xx)可重试，但这里我们无法获取 HTTP 状态码
+	// 其他 API 错误不重试
+	return false
+}
+
+// notifyRetry 重试通知函数
+func (c *Client) notifyRetry(err error, duration time.Duration) {
+	// 这里可以添加日志记录或 metrics
+	// 例如: log.Printf("请求失败，%v 后重试，错误: %v", duration, err)
+}
+
+// postWithRetry 发送 POST 请求（使用 backoff 实现重试）
 func (c *Client) postWithRetry(apiName string, params map[string]interface{}, fields string, ctx context.Context) (*Response, error) {
 	reqParams := RequestParams{
 		APIName: apiName,
@@ -262,44 +308,60 @@ func (c *Client) postWithRetry(apiName string, params map[string]interface{}, fi
 		Fields:  fields,
 	}
 
-	var lastErr error
 	var resp *Response
 
-	for i := 0; i < c.conf.Retries; i++ {
-		// 检查上下文
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		default:
+	// 定义重试操作
+	operation := func() error {
+		var err error
+		resp, err = c.doRequest(reqParams, ctx)
+
+		// 成功直接返回
+		if err == nil && resp.IsSuccess() {
+			return nil
 		}
 
-		resp, lastErr = c.doRequest(reqParams, ctx)
-		if lastErr == nil && resp.IsSuccess() {
-			return resp, nil
+		// 判断是否可重试
+		if !isRetryableError(resp, err) {
+			// 不可重试的错误，使用 backoff.Permanent 终止重试
+			if err != nil {
+				return backoff.Permanent(err)
+			}
+			// API 业务错误（非限频），不重试但返回结果
+			return nil
 		}
 
-		// 如果是限频错误，等待后重试
-		if resp != nil && resp.Code == CodeRateLimitExceeded {
-			time.Sleep(c.conf.Interval)
-			continue
+		// 可重试的错误
+		if err != nil {
+			return err
 		}
-
-		// 如果是网络错误，等待后重试
-		if lastErr != nil && i < c.conf.Retries-1 {
-			time.Sleep(c.conf.Interval)
-			continue
-		}
-
-		// 其他错误直接返回
-		if lastErr == nil && !resp.IsSuccess() {
-			return resp, nil
-		}
-		break
+		return fmt.Errorf("api error: code=%d, msg=%s", resp.Code, resp.Msg)
 	}
 
-	if lastErr != nil {
-		return nil, lastErr
+	// 配置 backoff 策略
+	var b backoff.BackOff
+	if c.conf.UseBackoff {
+		// 指数退避
+		expBackoff := backoff.NewExponentialBackOff()
+		expBackoff.InitialInterval = c.conf.Interval
+		expBackoff.MaxInterval = c.conf.MaxInterval
+		expBackoff.Multiplier = 2
+		expBackoff.RandomizationFactor = 0.1
+		b = backoff.WithMaxRetries(expBackoff, uint64(c.conf.Retries))
+	} else {
+		// 固定间隔退避
+		constBackoff := backoff.NewConstantBackOff(c.conf.Interval)
+		b = backoff.WithMaxRetries(constBackoff, uint64(c.conf.Retries))
 	}
+
+	// 包装上下文支持取消
+	b = backoff.WithContext(b, ctx)
+
+	// 执行重试
+	err := backoff.RetryNotify(operation, b, c.notifyRetry)
+	if err != nil {
+		return nil, err
+	}
+
 	return resp, nil
 }
 
@@ -354,4 +416,108 @@ func (c *Client) QueryAsDataFrame(apiName string, params map[string]interface{},
 // QueryWithContext 执行带上下文的通用查询（兼容旧版本，实际等价于 Query）
 func (c *Client) QueryWithContext(apiName string, params map[string]interface{}, fields string) (*Response, error) {
 	return c.Query(apiName, params, fields, WithContext(context.Background()))
+}
+
+// ==================== 便捷重试配置 ====================
+
+// RetryConfig 是重试配置的便捷构建器
+type RetryConfig struct {
+	MaxRetries   int
+	InitialDelay time.Duration
+	MaxDelay     time.Duration
+	UseBackoff   bool
+}
+
+// DefaultRetryConfig 返回默认重试配置
+func DefaultRetryConfig() RetryConfig {
+	return RetryConfig{
+		MaxRetries:   DefaultRetries,
+		InitialDelay: DefaultRetryInterval,
+		MaxDelay:     DefaultMaxInterval,
+		UseBackoff:   true,
+	}
+}
+
+// NoRetryConfig 返回禁用重试的配置
+func NoRetryConfig() RetryConfig {
+	return RetryConfig{
+		MaxRetries: 0,
+	}
+}
+
+// AggressiveRetryConfig 返回激进重试配置（适合不稳定网络）
+func AggressiveRetryConfig() RetryConfig {
+	return RetryConfig{
+		MaxRetries:   10,
+		InitialDelay: 100 * time.Millisecond,
+		MaxDelay:     60 * time.Second,
+		UseBackoff:   true,
+	}
+}
+
+// ClientConfWithRetry 使用 RetryConfig 生成 ClientConf
+func ClientConfWithRetry(token string, retry RetryConfig) ClientConf {
+	return ClientConf{
+		Token:       token,
+		Endpoint:    DefaultHTTPURL,
+		Limit:       DefaultLimit,
+		Retries:     retry.MaxRetries,
+		Interval:    retry.InitialDelay,
+		MaxInterval: retry.MaxDelay,
+		Timeout:     DefaultTimeout,
+		UseBackoff:  retry.UseBackoff,
+	}
+}
+
+// ExecuteWithRetry 使用给定的 backoff 策略执行任意函数
+// 这是一个通用工具函数，可用于其他需要重试的场景
+func ExecuteWithRetry(ctx context.Context, operation func() error, maxRetries int, useBackoff bool, interval, maxInterval time.Duration) error {
+	var b backoff.BackOff
+
+	if useBackoff {
+		expBackoff := backoff.NewExponentialBackOff()
+		expBackoff.InitialInterval = interval
+		expBackoff.MaxInterval = maxInterval
+		expBackoff.Multiplier = 2
+		b = backoff.WithMaxRetries(expBackoff, uint64(maxRetries))
+	} else {
+		constBackoff := backoff.NewConstantBackOff(interval)
+		b = backoff.WithMaxRetries(constBackoff, uint64(maxRetries))
+	}
+
+	b = backoff.WithContext(b, ctx)
+
+	return backoff.Retry(operation, b)
+}
+
+// ExecuteWithRetryNotify 带通知的重试执行
+func ExecuteWithRetryNotify(ctx context.Context, operation func() error, maxRetries int, useBackoff bool, interval, maxInterval time.Duration, notify func(err error, duration time.Duration)) error {
+	var b backoff.BackOff
+
+	if useBackoff {
+		expBackoff := backoff.NewExponentialBackOff()
+		expBackoff.InitialInterval = interval
+		expBackoff.MaxInterval = maxInterval
+		expBackoff.Multiplier = 2
+		b = backoff.WithMaxRetries(expBackoff, uint64(maxRetries))
+	} else {
+		constBackoff := backoff.NewConstantBackOff(interval)
+		b = backoff.WithMaxRetries(constBackoff, uint64(maxRetries))
+	}
+
+	b = backoff.WithContext(b, ctx)
+
+	return backoff.RetryNotify(operation, b, notify)
+}
+
+// PermanentError 包装一个错误为不可重试错误
+// 使用示例: if shouldNotRetry(err) { return tushare.PermanentError(err) }
+func PermanentError(err error) error {
+	return backoff.Permanent(err)
+}
+
+// IsPermanentError 检查错误是否为不可重试错误
+func IsPermanentError(err error) bool {
+	var permanent *backoff.PermanentError
+	return errors.As(err, &permanent)
 }

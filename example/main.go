@@ -18,42 +18,74 @@ func main() {
 		token = "your_tushare_token_here"
 	}
 
-	// ========== 方式 1: 简单创建客户端 ==========
-	fmt.Println("=== 方式 1: 简单创建客户端 ===")
+	// ========== 方式 1: 简单创建客户端（使用默认指数退避）==========
+	fmt.Println("=== 方式 1: 简单创建客户端（使用默认指数退避）===")
 	client := tushare.NewClient(token)
 	fmt.Println("客户端创建成功（使用默认配置）")
 
-	// ========== 方式 2: 使用自定义配置创建客户端 ==========
-	fmt.Println("\n=== 方式 2: 使用自定义配置创建客户端 ===")
+	// ========== 方式 2: 使用指数退避策略 ==========
+	fmt.Println("\n=== 方式 2: 使用指数退避策略 ===")
+	clientWithBackoff := tushare.NewClient(token,
+		tushare.WithRetries(5),
+		tushare.WithRetryInterval(500*time.Millisecond), // 初始间隔 500ms
+		tushare.WithMaxInterval(30*time.Second),         // 最大间隔 30s
+		tushare.WithBackoff(true),                       // 启用指数退避
+	)
+	fmt.Printf("指数退避配置 - 初始间隔: 500ms, 最大间隔: 30s\n")
+
+	// ========== 方式 3: 使用固定间隔策略 ==========
+	fmt.Println("\n=== 方式 3: 使用固定间隔策略 ===")
+	clientWithFixed := tushare.NewClient(token,
+		tushare.WithRetries(3),
+		tushare.WithRetryInterval(2*time.Second), // 固定间隔 2s
+		tushare.WithBackoff(false),               // 禁用指数退避
+	)
+	fmt.Println("固定间隔配置 - 每次重试间隔 2s")
+
+	// ========== 方式 4: 使用配置结构体 ==========
+	fmt.Println("\n=== 方式 4: 使用配置结构体 ===")
 	conf := tushare.ClientConf{
-		Token:    token,
-		Endpoint: "https://api.tushare.pro",
-		Limit:    3000,              // 每页 3000 条
-		Retries:  5,                 // 重试 5 次
-		Interval: 5 * time.Second,   // 重试间隔 5 秒
-		Timeout:  30 * time.Second,  // HTTP 超时 30 秒
+		Token:       token,
+		Endpoint:    "https://api.tushare.pro",
+		Limit:       5000,
+		Retries:     5,
+		Interval:    1 * time.Second,
+		MaxInterval: 60 * time.Second,
+		Timeout:     30 * time.Second,
+		UseBackoff:  true,
 	}
 	clientWithConf := tushare.NewClientWithConf(conf)
-	fmt.Printf("配置客户端 - Limit: %d, Retries: %d, Interval: %v\n",
-		conf.Limit, conf.Retries, conf.Interval)
+	fmt.Printf("配置客户端 - 指数退避: %v\n", conf.UseBackoff)
 
-	// ========== 方式 3: 使用选项创建客户端 ==========
-	fmt.Println("\n=== 方式 3: 使用选项创建客户端 ===")
-	clientWithOpts := tushare.NewClient(token,
-		tushare.WithHTTPURL("https://api.tushare.pro"),
-		tushare.WithLimit(5000),
-		tushare.WithRetries(3),
-		tushare.WithRetryInterval(10*time.Second),
-		tushare.WithTimeout(60*time.Second),
-	)
-	fmt.Println("客户端创建成功（使用选项）")
+	// ========== 方式 5: 使用便捷重试配置 ==========
+	fmt.Println("\n=== 方式 5: 使用便捷重试配置 ===")
 
-	// 使用默认客户端进行演示
+	// 默认重试配置
+	defaultRetry := tushare.DefaultRetryConfig()
+	fmt.Printf("默认配置: 重试%d次, 初始间隔%v, 最大间隔%v\n",
+		defaultRetry.MaxRetries, defaultRetry.InitialDelay, defaultRetry.MaxDelay)
+
+	// 激进重试配置（适合不稳定网络）
+	aggRetry := tushare.AggressiveRetryConfig()
+	fmt.Printf("激进配置: 重试%d次, 初始间隔%v, 最大间隔%v\n",
+		aggRetry.MaxRetries, aggRetry.InitialDelay, aggRetry.MaxDelay)
+
+	// 禁用重试
+	noRetry := tushare.NoRetryConfig()
+	fmt.Printf("禁用重试: 重试%d次\n", noRetry.MaxRetries)
+
+	// 使用配置创建客户端
+	confWithRetry := tushare.ClientConfWithRetry(token, defaultRetry)
+	clientWithRetryConf := tushare.NewClientWithConf(confWithRetry)
+	_ = clientWithRetryConf
+
+	// 使用前面创建的客户端进行演示
+	_ = clientWithBackoff
+	_ = clientWithFixed
 	_ = clientWithConf
-	_ = clientWithOpts
 
-	// ========== 示例 1: 获取股票基础信息（自动分页） ==========
-	fmt.Println("\n=== 示例 1: 获取股票基础信息（自动分页获取所有数据） ===")
+	// ========== 示例 1: 获取股票基础信息（自动分页 + 指数退避重试） ==========
+	fmt.Println("\n=== 示例 1: 获取股票基础信息（自动分页 + 指数退避重试） ===")
 	stockBasicParams := &tushare.StockBasicParams{
 		Exchange:   "SZSE",
 		ListStatus: "L",
@@ -64,7 +96,7 @@ func main() {
 	if err != nil {
 		log.Printf("获取股票基础信息失败: %v\n", err)
 	} else {
-		fmt.Printf("共获取 %d 条记录（已自动处理分页）\n", len(resp.Data.Items))
+		fmt.Printf("共获取 %d 条记录（已自动处理分页和重试）\n", len(resp.Data.Items))
 		// 打印前 5 条记录
 		for i, item := range resp.Data.Items {
 			if i >= 5 {
@@ -207,5 +239,48 @@ func main() {
 		log.Printf("查询失败: %v\n", err)
 	} else {
 		fmt.Printf("单次查询获取 %d 条记录\n", len(resp.Data.Items))
+	}
+
+	// ========== 示例 9: 使用通用重试工具函数 ==========
+	fmt.Println("\n=== 示例 9: 使用通用重试工具函数 ===")
+	var attemptCount int
+	err = tushare.ExecuteWithRetry(
+		context.Background(),
+		func() error {
+			attemptCount++
+			if attemptCount < 3 {
+				return fmt.Errorf("模拟失败，第%d次尝试", attemptCount)
+			}
+			fmt.Printf("成功！共尝试 %d 次\n", attemptCount)
+			return nil
+		},
+		5,                      // 最大重试 5 次
+		true,                   // 使用指数退避
+		100*time.Millisecond,   // 初始间隔 100ms
+		5*time.Second,          // 最大间隔 5s
+	)
+	if err != nil {
+		log.Printf("重试最终失败: %v\n", err)
+	}
+
+	// ========== 示例 10: 使用永久错误终止重试 ==========
+	fmt.Println("\n=== 示例 10: 使用永久错误终止重试 ===")
+	err = tushare.ExecuteWithRetryNotify(
+		context.Background(),
+		func() error {
+			// 某些错误不应该重试，可以直接返回永久错误
+			// return tushare.PermanentError(fmt.Errorf("不应该重试的错误"))
+			return nil // 这里演示成功情况
+		},
+		3,
+		false,
+		100*time.Millisecond,
+		time.Second,
+		func(err error, duration time.Duration) {
+			fmt.Printf("即将重试，间隔: %v, 错误: %v\n", duration, err)
+		},
+	)
+	if err != nil {
+		log.Printf("执行失败: %v\n", err)
 	}
 }

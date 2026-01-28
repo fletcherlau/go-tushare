@@ -3,6 +3,7 @@ package tushare
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
@@ -237,7 +238,7 @@ func TestClient_QueryError(t *testing.T) {
 	}
 }
 
-func TestClient_Retry(t *testing.T) {
+func TestClient_BackoffRetry(t *testing.T) {
 	// 请求计数器
 	var requestCount int32
 
@@ -270,11 +271,12 @@ func TestClient_Retry(t *testing.T) {
 	}))
 	defer server.Close()
 
-	// 创建客户端，设置重试 3 次，间隔 10ms
+	// 创建客户端，使用指数退避
 	client := NewClient("test_token",
 		WithHTTPURL(server.URL),
-		WithRetries(3),
+		WithRetries(5),
 		WithRetryInterval(10*time.Millisecond),
+		WithBackoff(true), // 使用指数退避
 	)
 
 	// 测试查询 - 应该自动重试
@@ -285,13 +287,109 @@ func TestClient_Retry(t *testing.T) {
 		return
 	}
 
-	// 验证请求次数（3次重试）
+	// 验证请求次数（3次：2次失败+1次成功）
 	if requestCount != 3 {
 		t.Errorf("期望请求 3 次（含重试），但实际请求 %d 次", requestCount)
 	}
 
 	if !resp.IsSuccess() {
 		t.Error("期望最终成功")
+	}
+}
+
+func TestClient_NoBackoffRetry(t *testing.T) {
+	// 请求计数器
+	var requestCount int32
+
+	// 创建模拟服务器，第一次返回限频错误
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		count := atomic.AddInt32(&requestCount, 1)
+
+		if count == 1 {
+			// 返回限频错误
+			response := Response{
+				Code: CodeRateLimitExceeded,
+				Msg:  "超过调用频率",
+			}
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(response)
+			return
+		}
+
+		// 第二次返回成功
+		response := Response{
+			Code: 0,
+			Data: &ResponseData{
+				Fields:  []string{"ts_code"},
+				Items:   [][]interface{}{{"000001.SZ"}},
+				HasMore: false,
+			},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(response)
+	}))
+	defer server.Close()
+
+	// 创建客户端，使用固定间隔
+	client := NewClient("test_token",
+		WithHTTPURL(server.URL),
+		WithRetries(3),
+		WithRetryInterval(50*time.Millisecond),
+		WithBackoff(false), // 使用固定间隔
+	)
+
+	// 测试查询
+	resp, err := client.Query("stock_basic", map[string]interface{}{}, "")
+
+	if err != nil {
+		t.Errorf("查询失败: %v", err)
+		return
+	}
+
+	// 验证请求次数
+	if requestCount != 2 {
+		t.Errorf("期望请求 2 次，但实际请求 %d 次", requestCount)
+	}
+
+	if !resp.IsSuccess() {
+		t.Error("期望最终成功")
+	}
+}
+
+func TestClient_RetryExhausted(t *testing.T) {
+	// 请求计数器
+	var requestCount int32
+
+	// 创建总是返回限频错误的模拟服务器
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&requestCount, 1)
+		response := Response{
+			Code: CodeRateLimitExceeded,
+			Msg:  "超过调用频率",
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(response)
+	}))
+	defer server.Close()
+
+	// 创建客户端，只重试 2 次
+	client := NewClient("test_token",
+		WithHTTPURL(server.URL),
+		WithRetries(2),
+		WithRetryInterval(10*time.Millisecond),
+	)
+
+	// 测试查询 - 应该最终失败
+	_, err := client.Query("stock_basic", map[string]interface{}{}, "")
+
+	if err == nil {
+		t.Error("期望返回错误（重试耗尽），但没有")
+		return
+	}
+
+	// 验证请求次数：原始请求 + 2次重试 = 3次
+	if requestCount != 3 {
+		t.Errorf("期望请求 3 次（原始+2次重试），但实际请求 %d 次", requestCount)
 	}
 }
 
@@ -312,12 +410,14 @@ func TestClient_NewClientWithConf(t *testing.T) {
 
 	// 使用配置创建客户端
 	conf := ClientConf{
-		Token:    "test_token",
-		Endpoint: server.URL,
-		Limit:    100,
-		Retries:  5,
-		Interval: 5 * time.Second,
-		Timeout:  30 * time.Second,
+		Token:       "test_token",
+		Endpoint:    server.URL,
+		Limit:       100,
+		Retries:     5,
+		Interval:    100 * time.Millisecond,
+		MaxInterval: 5 * time.Second,
+		Timeout:     30 * time.Second,
+		UseBackoff:  true,
 	}
 
 	client := NewClientWithConf(conf)
@@ -337,6 +437,35 @@ func TestClient_NewClientWithConf(t *testing.T) {
 	}
 	if !resp.IsSuccess() {
 		t.Error("期望成功")
+	}
+}
+
+func TestClient_RetryConfig(t *testing.T) {
+	// 测试默认重试配置
+	defaultConfig := DefaultRetryConfig()
+	if defaultConfig.MaxRetries != DefaultRetries {
+		t.Errorf("期望默认重试次数 %d，但得到 %d", DefaultRetries, defaultConfig.MaxRetries)
+	}
+
+	// 测试禁用重试配置
+	noRetryConfig := NoRetryConfig()
+	if noRetryConfig.MaxRetries != 0 {
+		t.Errorf("期望禁用重试，但得到重试次数 %d", noRetryConfig.MaxRetries)
+	}
+
+	// 测试激进重试配置
+	aggConfig := AggressiveRetryConfig()
+	if aggConfig.MaxRetries != 10 {
+		t.Errorf("期望激进重试次数 10，但得到 %d", aggConfig.MaxRetries)
+	}
+
+	// 测试使用 RetryConfig 创建 ClientConf
+	conf := ClientConfWithRetry("test_token", defaultConfig)
+	if conf.Token != "test_token" {
+		t.Errorf("期望 Token 为 test_token，但得到 %s", conf.Token)
+	}
+	if conf.Retries != defaultConfig.MaxRetries {
+		t.Errorf("期望 Retries 为 %d，但得到 %d", defaultConfig.MaxRetries, conf.Retries)
 	}
 }
 
@@ -461,5 +590,43 @@ func TestClient_StockBasic(t *testing.T) {
 
 	if !resp.IsSuccess() {
 		t.Errorf("期望成功，但 code=%d", resp.Code)
+	}
+}
+
+func TestExecuteWithRetry(t *testing.T) {
+	// 测试通用重试函数
+	var count int
+	operation := func() error {
+		count++
+		if count < 3 {
+			return fmt.Errorf("temporary error")
+		}
+		return nil
+	}
+
+	ctx := context.Background()
+	err := ExecuteWithRetry(ctx, operation, 5, false, 10*time.Millisecond, time.Second)
+
+	if err != nil {
+		t.Errorf("期望成功，但得到错误: %v", err)
+	}
+
+	if count != 3 {
+		t.Errorf("期望执行 3 次，但实际执行 %d 次", count)
+	}
+}
+
+func TestPermanentError(t *testing.T) {
+	// 测试永久错误
+	err := PermanentError(fmt.Errorf("permanent error"))
+
+	if !IsPermanentError(err) {
+		t.Error("期望是永久错误")
+	}
+
+	// 测试普通错误
+	normalErr := fmt.Errorf("normal error")
+	if IsPermanentError(normalErr) {
+		t.Error("普通错误不应是永久错误")
 	}
 }
