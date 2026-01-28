@@ -2,6 +2,14 @@
 
 Tushare Pro HTTP API 的 Go 语言 SDK。
 
+## 特性
+
+- ✅ **自动分页** - 自动处理分页，一次性获取所有数据，业务层无需关心分页逻辑
+- ✅ **重试机制** - 支持超时和限频错误的自动重试
+- ✅ **上下文支持** - 支持 context.Context，可进行超时控制
+- ✅ **多种配置方式** - 支持选项模式或配置结构体创建客户端
+- ✅ **DataFrame 支持** - 提供类似 pandas 的 DataFrame 数据操作
+
 ## 安装
 
 ```bash
@@ -29,7 +37,7 @@ func main() {
     // 创建客户端
     client := tushare.NewClient("your_token_here")
 
-    // 获取股票基础信息
+    // 获取股票基础信息（自动处理分页，获取所有数据）
     resp, err := client.StockBasic(&tushare.StockBasicParams{
         Exchange:   "SZSE",
         ListStatus: "L",
@@ -40,40 +48,121 @@ func main() {
     }
 
     // 打印结果
+    fmt.Printf("共获取 %d 条记录\n", len(resp.Data.Items))
     for _, item := range resp.Data.Items {
         fmt.Println(item)
     }
 }
 ```
 
-## API 说明
+## 客户端配置
 
-### 客户端创建
+### 方式 1：使用选项创建（推荐）
 
 ```go
-// 基础创建
-client := tushare.NewClient("your_token")
-
-// 带选项创建
 client := tushare.NewClient("your_token",
-    tushare.WithHTTPURL("http://api.tushare.pro"),  // 自定义 API 地址
-    tushare.WithTimeout(30),                           // 设置超时时间（秒）
+    tushare.WithHTTPURL("https://api.tushare.pro"),  // 自定义 API 地址
+    tushare.WithTimeout(60 * time.Second),             // HTTP 超时
+    tushare.WithLimit(5000),                           // 每页数据条数
+    tushare.WithRetries(3),                            // 重试次数
+    tushare.WithRetryInterval(10 * time.Second),       // 重试间隔
 )
 ```
+
+### 方式 2：使用配置结构体
+
+```go
+conf := tushare.ClientConf{
+    Token:    "your_token",
+    Endpoint: "https://api.tushare.pro",
+    Limit:    5000,              // 每页数据条数
+    Retries:  3,                 // 重试次数
+    Interval: 10 * time.Second,  // 重试间隔
+    Timeout:  30 * time.Second,  // HTTP 超时
+}
+
+client := tushare.NewClientWithConf(conf)
+```
+
+### 默认配置
+
+| 配置项 | 默认值 | 说明 |
+|--------|--------|------|
+| Endpoint | `https://api.tushare.pro` | API 地址 |
+| Limit | 5000 | 每页数据条数 |
+| Retries | 3 | 重试次数 |
+| Interval | 10s | 重试间隔 |
+| Timeout | 30s | HTTP 超时 |
+
+## 核心功能
+
+### 自动分页
+
+所有 API 方法都支持自动分页，一次性获取所有数据：
+
+```go
+// 自动获取所有分页数据
+resp, err := client.StockBasic(&tushare.StockBasicParams{
+    Exchange: "SZSE",
+})
+// resp.Data.Items 包含所有数据，无需手动处理分页
+```
+
+如果需要单次查询（不自动分页），可以使用 `QueryOne`：
+
+```go
+// 单次查询，只返回一页数据
+resp, err := client.QueryOne("stock_basic", params, fields)
+```
+
+### 超时控制
+
+使用 context 进行超时控制：
+
+```go
+ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+defer cancel()
+
+resp, err := client.Query("stock_basic", params, fields, tushare.WithContext(ctx))
+if err == context.DeadlineExceeded {
+    fmt.Println("查询超时")
+}
+```
+
+### 重试机制
+
+SDK 会自动对以下情况进行重试：
+- 网络超时错误
+- 限频错误（code=40203）
+
+重试次数和间隔可配置：
+
+```go
+client := tushare.NewClient(token,
+    tushare.WithRetries(5),
+    tushare.WithRetryInterval(5 * time.Second),
+)
+```
+
+## API 说明
 
 ### 通用查询接口
 
 ```go
+// 自动分页查询
 resp, err := client.Query("api_name", map[string]interface{}{
     "param1": "value1",
     "param2": "value2",
 }, "field1,field2,field3")
+
+// 单次查询（不自动分页）
+resp, err := client.QueryOne("api_name", params, fields)
 ```
 
 ### DataFrame 操作
 
 ```go
-// 获取 DataFrame
+// 获取 DataFrame（自动分页）
 df, err := client.QueryAsDataFrame("stock_basic", params, fields)
 
 // 获取行数
@@ -148,11 +237,12 @@ go run example/main.go
 ```go
 resp, err := client.Query("stock_basic", params, fields)
 if err != nil {
+    // 检查是否为 API 错误
     if apiErr, ok := err.(*tushare.APIError); ok {
-        // API 返回的错误（如权限不足）
         fmt.Printf("API 错误: code=%d, msg=%s\n", apiErr.Code, apiErr.Msg)
+    } else if err == context.DeadlineExceeded {
+        fmt.Println("请求超时")
     } else {
-        // 网络或其他错误
         fmt.Printf("请求错误: %v\n", err)
     }
     return
@@ -169,8 +259,9 @@ type Response struct {
 }
 
 type ResponseData struct {
-    Fields []string        // 字段名列表
-    Items  [][]interface{} // 数据内容
+    Fields  []string        // 字段名列表
+    Items   [][]interface{} // 数据内容
+    HasMore bool            // 是否还有更多数据（内部使用）
 }
 ```
 

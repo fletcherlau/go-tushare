@@ -7,15 +7,16 @@ import (
 
 // Response Tushare API 响应结构
 type Response struct {
-	Code int             `json:"code"`
-	Msg  string          `json:"msg"`
-	Data *ResponseData   `json:"data"`
+	Code int           `json:"code"`
+	Msg  string        `json:"msg"`
+	Data *ResponseData `json:"data"`
 }
 
 // ResponseData 响应数据结构
 type ResponseData struct {
-	Fields []string        `json:"fields"`
-	Items  [][]interface{} `json:"items"`
+	Fields  []string        `json:"fields"`
+	Items   [][]interface{} `json:"items"`
+	HasMore bool            `json:"has_more"` // 是否还有更多数据
 }
 
 // APIError API 错误
@@ -38,7 +39,7 @@ func (r *Response) ToRecords() []map[string]interface{} {
 	if r.Data == nil {
 		return nil
 	}
-	
+
 	records := make([]map[string]interface{}, 0, len(r.Data.Items))
 	for _, item := range r.Data.Items {
 		record := make(map[string]interface{})

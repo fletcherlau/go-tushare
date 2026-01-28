@@ -1,10 +1,13 @@
 package tushare
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func TestClient_Query(t *testing.T) {
@@ -41,11 +44,12 @@ func TestClient_Query(t *testing.T) {
 			Code: 0,
 			Msg:  "",
 			Data: &ResponseData{
-				Fields: []string{"ts_code", "name", "area"},
+				Fields:  []string{"ts_code", "name", "area"},
 				Items: [][]interface{}{
 					{"000001.SZ", "平安银行", "深圳"},
 					{"000002.SZ", "万科A", "深圳"},
 				},
+				HasMore: false,
 			},
 		}
 
@@ -81,6 +85,111 @@ func TestClient_Query(t *testing.T) {
 
 	if len(resp.Data.Items) != 2 {
 		t.Errorf("期望 2 条记录，但得到 %d", len(resp.Data.Items))
+	}
+}
+
+func TestClient_QueryPagination(t *testing.T) {
+	// 请求计数器
+	var requestCount int32
+
+	// 创建模拟服务器，模拟分页数据
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&requestCount, 1)
+
+		var reqParams RequestParams
+		if err := json.NewDecoder(r.Body).Decode(&reqParams); err != nil {
+			t.Errorf("解析请求体失败: %v", err)
+			return
+		}
+
+		offset, _ := reqParams.Params["offset"].(float64)
+
+		var response Response
+		if offset == 0 {
+			// 第一页数据
+			response = Response{
+				Code: 0,
+				Data: &ResponseData{
+					Fields: []string{"ts_code", "name"},
+					Items: [][]interface{}{
+						{"000001.SZ", "平安银行"},
+						{"000002.SZ", "万科A"},
+					},
+					HasMore: true,
+				},
+			}
+		} else {
+			// 第二页数据
+			response = Response{
+				Code: 0,
+				Data: &ResponseData{
+					Fields: []string{"ts_code", "name"},
+					Items: [][]interface{}{
+						{"000003.SZ", "PT金田A"},
+					},
+					HasMore: false,
+				},
+			}
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(response)
+	}))
+	defer server.Close()
+
+	// 创建客户端，设置每页 2 条
+	client := NewClient("test_token",
+		WithHTTPURL(server.URL),
+		WithLimit(2),
+	)
+
+	// 测试查询 - 应该自动获取两页数据
+	resp, err := client.Query("stock_basic", map[string]interface{}{}, "ts_code,name")
+
+	if err != nil {
+		t.Errorf("查询失败: %v", err)
+		return
+	}
+
+	// 验证请求次数
+	if requestCount != 2 {
+		t.Errorf("期望请求 2 次（分页），但实际请求 %d 次", requestCount)
+	}
+
+	// 验证合并后的数据
+	if len(resp.Data.Items) != 3 {
+		t.Errorf("期望合并后 3 条记录，但得到 %d", len(resp.Data.Items))
+	}
+}
+
+func TestClient_QueryWithContext(t *testing.T) {
+	// 创建延迟响应的模拟服务器
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(100 * time.Millisecond)
+		response := Response{
+			Code: 0,
+			Data: &ResponseData{
+				Fields:  []string{"ts_code"},
+				Items:   [][]interface{}{{"000001.SZ"}},
+				HasMore: false,
+			},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(response)
+	}))
+	defer server.Close()
+
+	client := NewClient("test_token", WithHTTPURL(server.URL))
+
+	// 创建带超时的上下文
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	// 测试超时
+	_, err := client.Query("stock_basic", map[string]interface{}{}, "", WithContext(ctx))
+
+	if err == nil {
+		t.Error("期望返回超时错误，但没有")
 	}
 }
 
@@ -128,6 +237,109 @@ func TestClient_QueryError(t *testing.T) {
 	}
 }
 
+func TestClient_Retry(t *testing.T) {
+	// 请求计数器
+	var requestCount int32
+
+	// 创建模拟服务器，前两次返回限频错误
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		count := atomic.AddInt32(&requestCount, 1)
+
+		if count <= 2 {
+			// 返回限频错误
+			response := Response{
+				Code: CodeRateLimitExceeded,
+				Msg:  "超过调用频率",
+			}
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(response)
+			return
+		}
+
+		// 第三次返回成功
+		response := Response{
+			Code: 0,
+			Data: &ResponseData{
+				Fields:  []string{"ts_code"},
+				Items:   [][]interface{}{{"000001.SZ"}},
+				HasMore: false,
+			},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(response)
+	}))
+	defer server.Close()
+
+	// 创建客户端，设置重试 3 次，间隔 10ms
+	client := NewClient("test_token",
+		WithHTTPURL(server.URL),
+		WithRetries(3),
+		WithRetryInterval(10*time.Millisecond),
+	)
+
+	// 测试查询 - 应该自动重试
+	resp, err := client.Query("stock_basic", map[string]interface{}{}, "")
+
+	if err != nil {
+		t.Errorf("查询失败: %v", err)
+		return
+	}
+
+	// 验证请求次数（3次重试）
+	if requestCount != 3 {
+		t.Errorf("期望请求 3 次（含重试），但实际请求 %d 次", requestCount)
+	}
+
+	if !resp.IsSuccess() {
+		t.Error("期望最终成功")
+	}
+}
+
+func TestClient_NewClientWithConf(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		response := Response{
+			Code: 0,
+			Data: &ResponseData{
+				Fields:  []string{"ts_code"},
+				Items:   [][]interface{}{{"000001.SZ"}},
+				HasMore: false,
+			},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(response)
+	}))
+	defer server.Close()
+
+	// 使用配置创建客户端
+	conf := ClientConf{
+		Token:    "test_token",
+		Endpoint: server.URL,
+		Limit:    100,
+		Retries:  5,
+		Interval: 5 * time.Second,
+		Timeout:  30 * time.Second,
+	}
+
+	client := NewClientWithConf(conf)
+
+	if client.conf.Token != "test_token" {
+		t.Errorf("期望 Token 为 test_token，但得到 %s", client.conf.Token)
+	}
+
+	if client.conf.Limit != 100 {
+		t.Errorf("期望 Limit 为 100，但得到 %d", client.conf.Limit)
+	}
+
+	// 测试调用
+	resp, err := client.Query("test", nil, "")
+	if err != nil {
+		t.Errorf("查询失败: %v", err)
+	}
+	if !resp.IsSuccess() {
+		t.Error("期望成功")
+	}
+}
+
 func TestResponse_ToRecords(t *testing.T) {
 	resp := &Response{
 		Code: 0,
@@ -137,6 +349,7 @@ func TestResponse_ToRecords(t *testing.T) {
 				{"000001.SZ", "平安银行", 10.5},
 				{"000002.SZ", "万科A", 15.2},
 			},
+			HasMore: false,
 		},
 	}
 
@@ -167,6 +380,7 @@ func TestDataFrame(t *testing.T) {
 				{"000001.SZ", "平安银行", 10.0, 10.5},
 				{"000002.SZ", "万科A", 15.0, 15.2},
 			},
+			HasMore: false,
 		},
 	}
 
@@ -201,16 +415,51 @@ func TestDataFrame(t *testing.T) {
 	}
 }
 
-func TestClient_Options(t *testing.T) {
-	// 测试自定义选项
-	customURL := "http://custom.api.com"
-	
-	client := NewClient("test_token",
-		WithHTTPURL(customURL),
-		WithTimeout(60),
-	)
+func TestClient_StockBasic(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var reqParams RequestParams
+		if err := json.NewDecoder(r.Body).Decode(&reqParams); err != nil {
+			t.Errorf("解析请求体失败: %v", err)
+			return
+		}
 
-	if client.httpURL != customURL {
-		t.Errorf("期望 httpURL 为 %s，但得到 %s", customURL, client.httpURL)
+		// 验证参数
+		if reqParams.APIName != "stock_basic" {
+			t.Errorf("期望 api_name 为 stock_basic，但得到 %s", reqParams.APIName)
+		}
+
+		// 验证 list_status 默认值
+		if reqParams.Params["list_status"] != "L" {
+			t.Errorf("期望 list_status 默认为 L，但得到 %v", reqParams.Params["list_status"])
+		}
+
+		response := Response{
+			Code: 0,
+			Data: &ResponseData{
+				Fields:  []string{"ts_code", "name"},
+				Items:   [][]interface{}{{"000001.SZ", "平安银行"}},
+				HasMore: false,
+			},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(response)
+	}))
+	defer server.Close()
+
+	client := NewClient("test_token", WithHTTPURL(server.URL))
+
+	params := &StockBasicParams{
+		Exchange: "SZSE",
+		Fields:   "ts_code,name",
+	}
+
+	resp, err := client.StockBasic(params)
+	if err != nil {
+		t.Errorf("查询失败: %v", err)
+		return
+	}
+
+	if !resp.IsSuccess() {
+		t.Errorf("期望成功，但 code=%d", resp.Code)
 	}
 }
