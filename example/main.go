@@ -8,6 +8,7 @@ import (
 	"time"
 
 	tushare "github.com/yourusername/go-tushare"
+	"github.com/yourusername/go-tushare/stock/basic"
 )
 
 func main() {
@@ -84,15 +85,13 @@ func main() {
 	_ = clientWithFixed
 	_ = clientWithConf
 
-	// ========== 示例 1: 获取股票基础信息（自动分页 + 指数退避重试） ==========
-	fmt.Println("\n=== 示例 1: 获取股票基础信息（自动分页 + 指数退避重试） ===")
-	stockBasicParams := &tushare.StockBasicParams{
+	// ========== 示例 1: 获取股票基础信息（使用 stock/basic 包）==========
+	fmt.Println("\n=== 示例 1: 获取股票基础信息（使用 stock/basic 包）===")
+	resp, err := basic.StockBasic(client, &basic.StockBasicParams{
 		Exchange:   "SZSE",
 		ListStatus: "L",
 		Fields:     "ts_code,name,area,industry,list_date",
-	}
-
-	resp, err := client.StockBasic(stockBasicParams)
+	})
 	if err != nil {
 		log.Printf("获取股票基础信息失败: %v\n", err)
 	} else {
@@ -193,14 +192,15 @@ func main() {
 		}
 	}
 
-	// ========== 示例 6: 通用查询接口 ==========
-	fmt.Println("\n=== 示例 6: 通用查询接口 ===")
-	resp, err = client.Query("trade_cal", map[string]interface{}{
-		"exchange":   "SSE",
-		"start_date": "20240101",
-		"end_date":   "20240110",
-		"is_open":    "1",
-	}, "")
+	// ========== 示例 6: 使用 stock/basic 包获取交易日历 ==========
+	fmt.Println("\n=== 示例 6: 使用 stock/basic 包获取交易日历 ===")
+	resp, err = basic.TradeCal(client, &basic.TradeCalParams{
+		Exchange:  "SSE",
+		StartDate: "20240101",
+		EndDate:   "20240110",
+		IsOpen:    "1",
+		Fields:    "exchange,cal_date,is_open",
+	})
 	if err != nil {
 		log.Printf("获取交易日历失败: %v\n", err)
 	} else {
@@ -217,7 +217,7 @@ func main() {
 	fmt.Println("\n=== 示例 7: 错误处理 ===")
 	// 使用错误的 token 创建客户端
 	badClient := tushare.NewClient("invalid_token")
-	resp, err = badClient.StockBasic(&tushare.StockBasicParams{})
+	resp, err = basic.StockBasic(badClient, &basic.StockBasicParams{})
 	if err != nil {
 		if apiErr, ok := err.(*tushare.APIError); ok {
 			fmt.Printf("API 错误 - 代码: %d, 消息: %s\n", apiErr.Code, apiErr.Msg)
@@ -254,10 +254,10 @@ func main() {
 			fmt.Printf("成功！共尝试 %d 次\n", attemptCount)
 			return nil
 		},
-		5,                      // 最大重试 5 次
-		true,                   // 使用指数退避
-		100*time.Millisecond,   // 初始间隔 100ms
-		5*time.Second,          // 最大间隔 5s
+		5,                    // 最大重试 5 次
+		true,                 // 使用指数退避
+		100*time.Millisecond, // 初始间隔 100ms
+		5*time.Second,        // 最大间隔 5s
 	)
 	if err != nil {
 		log.Printf("重试最终失败: %v\n", err)

@@ -544,55 +544,6 @@ func TestDataFrame(t *testing.T) {
 	}
 }
 
-func TestClient_StockBasic(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var reqParams RequestParams
-		if err := json.NewDecoder(r.Body).Decode(&reqParams); err != nil {
-			t.Errorf("解析请求体失败: %v", err)
-			return
-		}
-
-		// 验证参数
-		if reqParams.APIName != "stock_basic" {
-			t.Errorf("期望 api_name 为 stock_basic，但得到 %s", reqParams.APIName)
-		}
-
-		// 验证 list_status 默认值
-		if reqParams.Params["list_status"] != "L" {
-			t.Errorf("期望 list_status 默认为 L，但得到 %v", reqParams.Params["list_status"])
-		}
-
-		response := Response{
-			Code: 0,
-			Data: &ResponseData{
-				Fields:  []string{"ts_code", "name"},
-				Items:   [][]interface{}{{"000001.SZ", "平安银行"}},
-				HasMore: false,
-			},
-		}
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(response)
-	}))
-	defer server.Close()
-
-	client := NewClient("test_token", WithHTTPURL(server.URL))
-
-	params := &StockBasicParams{
-		Exchange: "SZSE",
-		Fields:   "ts_code,name",
-	}
-
-	resp, err := client.StockBasic(params)
-	if err != nil {
-		t.Errorf("查询失败: %v", err)
-		return
-	}
-
-	if !resp.IsSuccess() {
-		t.Errorf("期望成功，但 code=%d", resp.Code)
-	}
-}
-
 func TestExecuteWithRetry(t *testing.T) {
 	// 测试通用重试函数
 	var count int
