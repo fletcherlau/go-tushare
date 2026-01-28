@@ -7,8 +7,8 @@ import (
 	"os"
 	"time"
 
-	tushare "github.com/yourusername/go-tushare"
-	"github.com/yourusername/go-tushare/stock/basic"
+	tushare "github.com/fletcherlau/go-tushare"
+	"github.com/fletcherlau/go-tushare/stock/basic"
 )
 
 func main() {

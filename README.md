@@ -14,7 +14,7 @@ Tushare Pro HTTP API 的 Go 语言 SDK，使用 `backoff` 库实现优雅的指�
 ## 安装
 
 ```bash
-go get github.com/yourusername/go-tushare
+go get github.com/fletcherlau/go-tushare
 ```
 
 ## 快速开始
@@ -31,7 +31,7 @@ package main
 import (
     "fmt"
     "log"
-    tushare "github.com/yourusername/go-tushare"
+    tushare "github.com/fletcherlau/go-tushare"
 )
 
 func main() {

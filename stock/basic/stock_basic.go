@@ -3,7 +3,7 @@
 package basic
 
 import (
-	tushare "github.com/yourusername/go-tushare"
+	tushare "github.com/fletcherlau/go-tushare"
 )
 
 // StockBasicParams 股票基础信息参数
