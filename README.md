@@ -31,7 +31,9 @@ package main
 import (
     "fmt"
     "log"
+    
     tushare "github.com/fletcherlau/go-tushare"
+    "github.com/fletcherlau/go-tushare/stock/basic"
 )
 
 func main() {
@@ -39,7 +41,7 @@ func main() {
     client := tushare.NewClient("your_token_here")
 
     // 获取股票基础信息（自动处理分页和重试）
-    resp, err := client.StockBasic(&tushare.StockBasicParams{
+    resp, err := basic.StockBasic(client, &basic.StockBasicParams{
         Exchange:   "SZSE",
         ListStatus: "L",
         Fields:     "ts_code,name,area,industry",
@@ -188,11 +190,13 @@ if isPermanentError(err) {
 
 ### 自动分页
 
-所有 API 方法都支持自动分页，一次性获取所有数据：
+使用 `stock/basic` 包的 API 方法支持自动分页，一次性获取所有数据：
 
 ```go
+import "github.com/fletcherlau/go-tushare/stock/basic"
+
 // 自动获取所有分页数据（自动重试每个失败的请求）
-resp, err := client.StockBasic(&tushare.StockBasicParams{
+resp, err := basic.StockBasic(client, &basic.StockBasicParams{
     Exchange: "SZSE",
 })
 // resp.Data.Items 包含所有数据，无需手动处理分页
@@ -254,46 +258,9 @@ closePrice := df.GetFloat64(0, "close")
 
 ### 股票基础数据
 
-| 接口 | 方法 | 参数结构体 |
-|------|------|-----------|
-| 股票基础信息 | `StockBasic` | `StockBasicParams` |
-| 上市公司信息 | `StockCompany` | `StockCompanyParams` |
-| 股票曾用名 | `NameChange` | - |
-| 沪深股通成份股 | `HSConst` | - |
-| 停牌信息 | `StockSuspend` | - |
-| 交易日历 | `TradeCal` | - |
-
-### 行情数据
-
-| 接口 | 方法 | 参数结构体 |
-|------|------|-----------|
-| 日线行情 | `Daily` | `DailyParams` |
-| 周线行情 | `Weekly` | `WeeklyParams` |
-| 月线行情 | `Monthly` | `MonthlyParams` |
-| 每日指标 | `DailyBasic` | `DailyBasicParams` |
-| 个股资金流向 | `MoneyFlow` | `MoneyFlowParams` |
-
-### 指数数据
-
-| 接口 | 方法 | 参数结构体 |
-|------|------|-----------|
-| 指数基本信息 | `IndexBasic` | `IndexBasicParams` |
-| 指数日线行情 | `IndexDaily` | `IndexDailyParams` |
-
-### 财务数据
-
-| 接口 | 方法 | 参数结构体 |
-|------|------|-----------|
-| 利润表 | `Income` | `IncomeParams` |
-| 资产负债表 | `BalanceSheet` | `BalanceSheetParams` |
-| 现金流量表 | `CashFlow` | `CashFlowParams` |
-
-### 期货数据
-
-| 接口 | 方法 | 参数结构体 |
-|------|------|-----------|
-| 期货合约信息 | `FutBasic` | `FutBasicParams` |
-| 期货日线行情 | `FutDaily` | `FutDailyParams` |
+| 接口 | 方法 | 参数结构体 | 包路径 |
+|------|------|-----------|--------|
+| 股票基础信息 | `StockBasic` | `StockBasicParams` | `stock/basic` |
 
 ## 完整示例
 
@@ -310,7 +277,7 @@ go run example/main.go
 ## 错误处理
 
 ```go
-resp, err := client.Query("stock_basic", params, fields)
+resp, err := basic.StockBasic(client, params)
 if err != nil {
     // 检查是否为 API 错误
     if apiErr, ok := err.(*tushare.APIError); ok {

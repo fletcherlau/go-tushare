@@ -105,34 +105,8 @@ func main() {
 		}
 	}
 
-	// ========== 示例 2: 获取日线行情 ==========
-	fmt.Println("\n=== 示例 2: 获取日线行情 ===")
-	dailyParams := &tushare.DailyParams{
-		TSCode:    "000001.SZ",
-		StartDate: "20240101",
-		EndDate:   "20240110",
-		Fields:    "ts_code,trade_date,open,high,low,close,vol",
-	}
-
-	resp, err = client.Daily(dailyParams)
-	if err != nil {
-		log.Printf("获取日线行情失败: %v\n", err)
-	} else {
-		fmt.Printf("共获取 %d 条记录\n", len(resp.Data.Items))
-		df := tushare.NewDataFrame(resp)
-		for i := 0; i < df.Len() && i < 5; i++ {
-			fmt.Printf("日期: %s, 开盘: %.2f, 最高: %.2f, 最低: %.2f, 收盘: %.2f\n",
-				df.GetString(i, "trade_date"),
-				df.GetFloat64(i, "open"),
-				df.GetFloat64(i, "high"),
-				df.GetFloat64(i, "low"),
-				df.GetFloat64(i, "close"),
-			)
-		}
-	}
-
-	// ========== 示例 3: 使用 DataFrame 方式查询 ==========
-	fmt.Println("\n=== 示例 3: 使用 DataFrame 方式查询 ===")
+	// ========== 示例 2: 使用 DataFrame 方式查询 ==========
+	fmt.Println("\n=== 示例 2: 使用 DataFrame 方式查询 ===")
 	df, err := client.QueryAsDataFrame("stock_basic", map[string]interface{}{
 		"exchange":    "SSE",
 		"list_status": "L",
@@ -151,8 +125,8 @@ func main() {
 		}
 	}
 
-	// ========== 示例 4: 带超时的查询 ==========
-	fmt.Println("\n=== 示例 4: 带超时的查询 ===")
+	// ========== 示例 3: 带超时的查询 ==========
+	fmt.Println("\n=== 示例 3: 带超时的查询 ===")
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
@@ -170,51 +144,8 @@ func main() {
 		fmt.Printf("在超时前获取 %d 条记录\n", len(resp.Data.Items))
 	}
 
-	// ========== 示例 5: 获取指数行情 ==========
-	fmt.Println("\n=== 示例 5: 获取指数行情 ===")
-	indexParams := &tushare.IndexDailyParams{
-		TSCode:    "000001.SH",
-		StartDate: "20240101",
-		EndDate:   "20240110",
-	}
-
-	resp, err = client.IndexDaily(indexParams)
-	if err != nil {
-		log.Printf("获取指数行情失败: %v\n", err)
-	} else {
-		fmt.Printf("共获取 %d 条记录\n", len(resp.Data.Items))
-		df := tushare.NewDataFrame(resp)
-		for i := 0; i < df.Len() && i < 5; i++ {
-			fmt.Printf("日期: %s, 收盘: %.2f\n",
-				df.GetString(i, "trade_date"),
-				df.GetFloat64(i, "close"),
-			)
-		}
-	}
-
-	// ========== 示例 6: 使用 stock/basic 包获取交易日历 ==========
-	fmt.Println("\n=== 示例 6: 使用 stock/basic 包获取交易日历 ===")
-	resp, err = basic.TradeCal(client, &basic.TradeCalParams{
-		Exchange:  "SSE",
-		StartDate: "20240101",
-		EndDate:   "20240110",
-		IsOpen:    "1",
-		Fields:    "exchange,cal_date,is_open",
-	})
-	if err != nil {
-		log.Printf("获取交易日历失败: %v\n", err)
-	} else {
-		fmt.Printf("共获取 %d 个交易日\n", len(resp.Data.Items))
-		for i, item := range resp.Data.Items {
-			if i >= 5 {
-				break
-			}
-			fmt.Printf("交易日: %v\n", item)
-		}
-	}
-
-	// ========== 示例 7: 错误处理 ==========
-	fmt.Println("\n=== 示例 7: 错误处理 ===")
+	// ========== 示例 4: 错误处理 ==========
+	fmt.Println("\n=== 示例 4: 错误处理 ===")
 	// 使用错误的 token 创建客户端
 	badClient := tushare.NewClient("invalid_token")
 	resp, err = basic.StockBasic(badClient, &basic.StockBasicParams{})
@@ -228,8 +159,8 @@ func main() {
 		fmt.Println("请求成功")
 	}
 
-	// ========== 示例 8: 单次查询（不处理分页） ==========
-	fmt.Println("\n=== 示例 8: 单次查询（不处理分页） ===")
+	// ========== 示例 5: 单次查询（不处理分页） ==========
+	fmt.Println("\n=== 示例 5: 单次查询（不处理分页） ===")
 	// 使用 QueryOne 方法，只获取一页数据，不自动获取后续分页
 	// 适用于确定数据量小的场景
 	resp, err = client.QueryOne("stock_basic", map[string]interface{}{
@@ -241,8 +172,8 @@ func main() {
 		fmt.Printf("单次查询获取 %d 条记录\n", len(resp.Data.Items))
 	}
 
-	// ========== 示例 9: 使用通用重试工具函数 ==========
-	fmt.Println("\n=== 示例 9: 使用通用重试工具函数 ===")
+	// ========== 示例 6: 使用通用重试工具函数 ==========
+	fmt.Println("\n=== 示例 6: 使用通用重试工具函数 ===")
 	var attemptCount int
 	err = tushare.ExecuteWithRetry(
 		context.Background(),
@@ -263,8 +194,8 @@ func main() {
 		log.Printf("重试最终失败: %v\n", err)
 	}
 
-	// ========== 示例 10: 使用永久错误终止重试 ==========
-	fmt.Println("\n=== 示例 10: 使用永久错误终止重试 ===")
+	// ========== 示例 7: 使用永久错误终止重试 ==========
+	fmt.Println("\n=== 示例 7: 使用永久错误终止重试 ===")
 	err = tushare.ExecuteWithRetryNotify(
 		context.Background(),
 		func() error {
