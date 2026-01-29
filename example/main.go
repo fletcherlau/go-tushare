@@ -87,21 +87,27 @@ func main() {
 
 	// ========== 示例 1: 获取股票基础信息（使用 stock/basic 包）==========
 	fmt.Println("\n=== 示例 1: 获取股票基础信息（使用 stock/basic 包）===")
-	resp, err := basic.StockBasic(client, &basic.StockBasicParams{
-		Exchange:   "SZSE",
-		ListStatus: "L",
-		Fields:     "ts_code,name,area,industry,list_date",
+	items, err := basic.StockBasic(client, &basic.StockBasicParams{
+		Exchange:   basic.ExchangeSZSE,
+		ListStatus: basic.ListStatusListed,
+		Fields: []string{
+			basic.StockBasicFieldTSCode,
+			basic.StockBasicFieldName,
+			basic.StockBasicFieldArea,
+			basic.StockBasicFieldIndustry,
+			basic.StockBasicFieldListDate,
+		},
 	})
 	if err != nil {
 		log.Printf("获取股票基础信息失败: %v\n", err)
 	} else {
-		fmt.Printf("共获取 %d 条记录（已自动处理分页和重试）\n", len(resp.Data.Items))
+		fmt.Printf("共获取 %d 条记录（已自动处理分页和重试）\n", len(items))
 		// 打印前 5 条记录
-		for i, item := range resp.Data.Items {
+		for i, item := range items {
 			if i >= 5 {
 				break
 			}
-			fmt.Printf("记录 %d: %v\n", i+1, item)
+			fmt.Printf("记录 %d: %s %s %s %s %s\n", i+1, item.TSCode, item.Name, item.Area, item.Industry, item.ListDate)
 		}
 	}
 
@@ -130,9 +136,13 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	resp, err = client.Query("stock_basic", map[string]interface{}{
-		"exchange": "SZSE",
-	}, "ts_code,name", tushare.WithContext(ctx))
+	items, err = basic.StockBasic(client, &basic.StockBasicParams{
+		Exchange: basic.ExchangeSZSE,
+		Fields: []string{
+			basic.StockBasicFieldTSCode,
+			basic.StockBasicFieldName,
+		},
+	}, tushare.WithContext(ctx))
 
 	if err != nil {
 		if err == context.DeadlineExceeded {
@@ -141,14 +151,14 @@ func main() {
 			log.Printf("查询失败: %v\n", err)
 		}
 	} else {
-		fmt.Printf("在超时前获取 %d 条记录\n", len(resp.Data.Items))
+		fmt.Printf("在超时前获取 %d 条记录\n", len(items))
 	}
 
 	// ========== 示例 4: 错误处理 ==========
 	fmt.Println("\n=== 示例 4: 错误处理 ===")
 	// 使用错误的 token 创建客户端
 	badClient := tushare.NewClient("invalid_token")
-	resp, err = basic.StockBasic(badClient, &basic.StockBasicParams{})
+	_, err = basic.StockBasic(badClient, &basic.StockBasicParams{})
 	if err != nil {
 		if apiErr, ok := err.(*tushare.APIError); ok {
 			fmt.Printf("API 错误 - 代码: %d, 消息: %s\n", apiErr.Code, apiErr.Msg)
@@ -163,7 +173,7 @@ func main() {
 	fmt.Println("\n=== 示例 5: 单次查询（不处理分页） ===")
 	// 使用 QueryOne 方法，只获取一页数据，不自动获取后续分页
 	// 适用于确定数据量小的场景
-	resp, err = client.QueryOne("stock_basic", map[string]interface{}{
+	resp, err := client.QueryOne("stock_basic", map[string]interface{}{
 		"ts_code": "000001.SZ",
 	}, "ts_code,name")
 	if err != nil {
